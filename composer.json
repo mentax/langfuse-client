@@ -1,0 +1,59 @@
+{
+    "name": "mentax/langfuse-client",
+    "description": "Framework-agnostic PHP client for Langfuse: prompt management with a persistent last-known-good cache, and OTLP tracing for LLM calls.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["langfuse", "llm", "prompt-management", "observability", "opentelemetry", "otlp", "tracing"],
+    "authors": [
+        {
+            "name": "Mentax",
+            "homepage": "https://mentax.pl"
+        }
+    ],
+    "require": {
+        "php": "^8.3",
+        "ext-json": "*",
+        "psr/cache": "^2.0 || ^3.0",
+        "psr/clock": "^1.0",
+        "psr/http-client": "^1.0",
+        "psr/http-factory": "^1.1",
+        "psr/http-message": "^1.1 || ^2.0",
+        "psr/log": "^2.0 || ^3.0"
+    },
+    "require-dev": {
+        "friendsofphp/php-cs-fixer": "^3.75",
+        "nyholm/psr7": "^1.8.2",
+        "phpstan/phpstan": "^2.1",
+        "phpstan/phpstan-phpunit": "^2.0",
+        "phpstan/phpstan-strict-rules": "^2.0",
+        "phpunit/phpunit": "^12.0",
+        "symfony/cache": "^7.3",
+        "symfony/http-client": "^7.3"
+    },
+    "suggest": {
+        "symfony/http-client": "PSR-18 client (Psr18Client) and PSR-17 factories",
+        "guzzlehttp/guzzle": "Alternative PSR-18 client",
+        "symfony/cache": "PSR-6 FilesystemAdapter for the persistent prompt cache"
+    },
+    "autoload": {
+        "psr-4": {
+            "Mentax\\LangfuseClient\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Mentax\\LangfuseClient\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "cs": "php-cs-fixer fix --dry-run --diff",
+        "cs:fix": "php-cs-fixer fix",
+        "phpstan": "phpstan analyse",
+        "test": "phpunit",
+        "check": ["@cs", "@phpstan", "@test"]
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable"
+}
