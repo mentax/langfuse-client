@@ -325,6 +325,12 @@ $scores->create('verdict', 'regression', experimentRunId: $run->id);            
 
 Scores are sent immediately, one request each. Pass `id` to make retries idempotent.
 
+## Design
+
+[`docs/design.md`](docs/design.md) explains the decisions behind the library: why OTLP,
+how the cache behaves and why, the Langfuse v4 contracts for media and experiments,
+and how all of it was verified.
+
 ## Inspiration
 
 This package stands on the shoulders of others:

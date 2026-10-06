@@ -18,6 +18,9 @@ php examples/smoke-test-experiments.php   # media, datasets, experiment runs, sc
 
 Supported PHP: 8.3, 8.4, 8.5 (CI matrix). Code, comments and docs are in English.
 
+`docs/design.md` records the design decisions and the Langfuse v4 contract with the
+evidence behind them. Read it before changing transport, caching, media or experiments.
+
 ## Things an agent would get wrong
 
 - **Tracing must not break the traced code.** `Tracer::flush()`/`shutdown()` catch
