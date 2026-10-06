@@ -89,7 +89,8 @@ final readonly class DatasetClient
     }
 
     /**
-     * Active items of a dataset, fetched page by page.
+     * Active items of a dataset, fetched page by page. Archived items are skipped
+     * client-side, so experiments never run on them.
      *
      * @return Generator<int, DatasetItem>
      *
@@ -103,8 +104,11 @@ final readonly class DatasetClient
                 $this->http->get('/api/public/dataset-items', ['datasetName' => $datasetName, 'page' => $page, 'limit' => self::PAGE_SIZE]),
                 'Langfuse dataset items',
             );
-            foreach ($response->listOfArrays('data') as $item) {
-                yield DatasetItem::fromArray($item);
+            foreach ($response->listOfArrays('data') as $data) {
+                $item = DatasetItem::fromArray($data);
+                if ($item->status === DatasetItemStatus::Active) {
+                    yield $item;
+                }
             }
             $totalPages = (new ArrayReader($response->map('meta'), 'Langfuse dataset items meta'))->int('totalPages');
             ++$page;

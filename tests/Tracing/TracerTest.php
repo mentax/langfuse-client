@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mentax\LangfuseClient\Tests\Tracing;
 
 use InvalidArgumentException;
+use Mentax\LangfuseClient\Media\MediaReference;
 use Mentax\LangfuseClient\Prompt\TextPrompt;
 use Mentax\LangfuseClient\Tests\Support\FrozenClock;
 use Mentax\LangfuseClient\Tests\Support\InMemoryExporter;
@@ -74,6 +75,16 @@ final class TracerTest extends TestCase
 
         self::assertSame('{"claim":"C-1"}', $exportedTrace->attributes()['langfuse.observation.input']);
         self::assertSame('{"passed":true}', $exportedTrace->attributes()['langfuse.observation.output']);
+    }
+
+    public function testMediaReferenceIsWrittenAsReferenceString(): void
+    {
+        $reference = new MediaReference('m1', 'image/jpeg');
+        $trace = $this->tracer()->startTrace('t', input: ['photo' => $reference]);
+        $trace->end($reference);
+
+        self::assertSame('{"photo":"@@@langfuseMedia:type=image/jpeg|id=m1|source=bytes@@@"}', $trace->attributes()['langfuse.observation.input']);
+        self::assertSame('@@@langfuseMedia:type=image/jpeg|id=m1|source=bytes@@@', $trace->attributes()['langfuse.observation.output']);
     }
 
     public function testTraceLevelFieldsSetLaterReachEverySpan(): void

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mentax\LangfuseClient\Media;
 
+use JsonSerializable;
 use Stringable;
 
 /**
@@ -12,8 +13,9 @@ use Stringable;
  *
  * Langfuse recognises a reference only when it is the entire value of a JSON field,
  * e.g. {"photo": "@@@langfuseMedia:...@@@"}. Inside a longer text it is ignored.
+ * The object can be placed in input/output arrays directly; it serialises to that string.
  */
-final readonly class MediaReference implements Stringable
+final readonly class MediaReference implements JsonSerializable, Stringable
 {
     private const PATTERN = '/^@@@langfuseMedia:(.*)@@@$/';
 
@@ -45,5 +47,10 @@ final readonly class MediaReference implements Stringable
     public function __toString(): string
     {
         return sprintf('@@@langfuseMedia:type=%s|id=%s|source=%s@@@', $this->contentType, $this->mediaId, $this->source);
+    }
+
+    public function jsonSerialize(): string
+    {
+        return (string) $this;
     }
 }

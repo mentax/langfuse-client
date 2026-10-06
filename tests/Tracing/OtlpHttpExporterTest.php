@@ -55,6 +55,28 @@ final class OtlpHttpExporterTest extends TestCase
         );
     }
 
+    public function testInvalidUtf8DegradesInsteadOfDroppingTheBatch(): void
+    {
+        $http = (new FakeHttpClient())->respondJson([]);
+        $tracer = new Tracer(new OtlpHttpExporter(Factory::http($http)), clock: new FrozenClock());
+
+        $trace = $tracer->startTrace("audit-\xE9", input: "zg\xB3oszenie", tags: ["szkoda-\xB9"]);
+        $trace->fail(new RuntimeException("b\xB3\xB9d"));
+        $tracer->flush();
+
+        $span = (new DecodedJson($http->lastRequestJson()))->at('resourceSpans', 0, 'scopeSpans', 0, 'spans', 0);
+        self::assertSame("audit-\u{FFFD}", $span->at('name')->string());
+        self::assertSame("RuntimeException: b\u{FFFD}\u{FFFD}d", $span->at('status', 'message')->string());
+        self::assertContains(
+            ['key' => 'langfuse.observation.input', 'value' => ['stringValue' => "zg\u{FFFD}oszenie"]],
+            $span->at('attributes')->array(),
+        );
+        self::assertContains(
+            ['key' => 'langfuse.trace.tags', 'value' => ['arrayValue' => ['values' => [['stringValue' => "szkoda-\u{FFFD}"]]]]],
+            $span->at('attributes')->array(),
+        );
+    }
+
     public function testEncodesAttributeValueTypes(): void
     {
         $tracer = new Tracer(new InMemoryExporter(), clock: new FrozenClock());

@@ -74,7 +74,7 @@ final class DatasetClientTest extends TestCase
     {
         $this->http
             ->respondJson(['data' => [self::itemResponse(['id' => 'a'])], 'meta' => ['page' => 1, 'limit' => 100, 'totalItems' => 2, 'totalPages' => 2]])
-            ->respondJson(['data' => [self::itemResponse(['id' => 'b'])], 'meta' => ['page' => 2, 'limit' => 100, 'totalItems' => 2, 'totalPages' => 2]]);
+            ->respondJson(['data' => [self::itemResponse(['id' => 'b']), self::itemResponse(['id' => 'c', 'status' => 'ARCHIVED'])], 'meta' => ['page' => 2, 'limit' => 100, 'totalItems' => 3, 'totalPages' => 2]]);
 
         $ids = array_map(static fn(DatasetItem $item): string => $item->id, iterator_to_array($this->datasets->items('damageaudit/airbag-photo'), false));
 

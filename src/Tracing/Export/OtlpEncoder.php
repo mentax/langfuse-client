@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mentax\LangfuseClient\Tracing\Export;
 
 use DateTimeImmutable;
+use Mentax\LangfuseClient\Tracing\Json;
 use Mentax\LangfuseClient\Tracing\Observation;
 use Mentax\LangfuseClient\Version;
 
@@ -75,7 +76,7 @@ final class OtlpEncoder
         $span = [
             'traceId' => $observation->traceId(),
             'spanId' => $observation->id(),
-            'name' => $observation->name(),
+            'name' => Json::validUtf8($observation->name()),
             'kind' => self::SPAN_KIND_INTERNAL,
             'startTimeUnixNano' => self::nanoseconds($observation->startTime()),
             'endTimeUnixNano' => self::nanoseconds($end),
@@ -86,10 +87,10 @@ final class OtlpEncoder
             $span['parentSpanId'] = $observation->parentId();
         }
         if ($observation->statusCode() !== null) {
-            $span['status'] = array_filter(
-                ['code' => $observation->statusCode(), 'message' => $observation->statusMessage()],
-                static fn(mixed $value): bool => $value !== null,
-            );
+            $span['status'] = ['code' => $observation->statusCode()];
+            if ($observation->statusMessage() !== null) {
+                $span['status']['message'] = Json::validUtf8($observation->statusMessage());
+            }
         }
 
         return $span;
@@ -118,11 +119,11 @@ final class OtlpEncoder
     private static function value(string|int|float|bool|array $value): array
     {
         return match (true) {
-            is_string($value) => ['stringValue' => $value],
+            is_string($value) => ['stringValue' => Json::validUtf8($value)],
             is_bool($value) => ['boolValue' => $value],
             is_int($value) => ['intValue' => (string) $value],
             is_float($value) => ['doubleValue' => $value],
-            default => ['arrayValue' => ['values' => array_map(static fn(string $item): array => ['stringValue' => $item], $value)]],
+            default => ['arrayValue' => ['values' => array_map(static fn(string $item): array => ['stringValue' => Json::validUtf8($item)], $value)]],
         };
     }
 
