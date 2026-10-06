@@ -67,6 +67,47 @@ final readonly class HttpClient
     }
 
     /**
+     * Uploads raw bytes to a presigned storage URL. Langfuse credentials are not sent:
+     * the URL carries its own signature and points at S3/MinIO, not at Langfuse.
+     *
+     * @param array<string, string> $headers
+     *
+     * @return int HTTP status of the storage response
+     */
+    public function putToPresignedUrl(string $url, string $content, array $headers): int
+    {
+        $request = $this->requestFactory->createRequest('PUT', $url)
+            ->withBody($this->streamFactory->createStream($content));
+        foreach ($headers as $name => $value) {
+            $request = $request->withHeader($name, $value);
+        }
+
+        try {
+            return $this->client->sendRequest($request)->getStatusCode();
+        } catch (ClientExceptionInterface $e) {
+            throw new TransportException(sprintf('Upload to presigned URL failed: %s', $e->getMessage()), 0, $e);
+        }
+    }
+
+    /**
+     * Downloads bytes from a presigned storage URL.
+     */
+    public function download(string $url): string
+    {
+        try {
+            $response = $this->client->sendRequest($this->requestFactory->createRequest('GET', $url));
+        } catch (ClientExceptionInterface $e) {
+            throw new TransportException(sprintf('Download from presigned URL failed: %s', $e->getMessage()), 0, $e);
+        }
+
+        if ($response->getStatusCode() !== 200) {
+            throw ApiException::fromResponse('GET', '(presigned media URL)', $response->getStatusCode(), (string) $response->getBody());
+        }
+
+        return (string) $response->getBody();
+    }
+
+    /**
      * @param array<mixed>|null $body
      * @param array<string, string> $headers
      *

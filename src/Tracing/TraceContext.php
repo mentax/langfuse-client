@@ -23,6 +23,14 @@ final class TraceContext
 
     public ?bool $public = null;
 
+    public ?ExperimentRun $experimentRun = null;
+
+    public ?string $experimentItemId = null;
+
+    public mixed $experimentExpectedOutput = null;
+
+    public ?string $experimentRootSpanId = null;
+
     public function __construct(
         public readonly string $traceId,
         public readonly string $name,

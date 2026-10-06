@@ -12,7 +12,8 @@ composer check                 # all three below
 vendor/bin/php-cs-fixer fix    # PER-CS 2.0
 vendor/bin/phpstan analyse     # level max + strict rules, must stay at 0 errors
 vendor/bin/phpunit
-php examples/smoke-test.php    # needs LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY; talks to a real instance
+php examples/smoke-test.php               # prompts + tracing against a real instance (.env.smoke)
+php examples/smoke-test-experiments.php   # media, datasets, experiment runs, scores
 ```
 
 Supported PHP: 8.3, 8.4, 8.5 (CI matrix). Code, comments and docs are in English.
@@ -39,4 +40,16 @@ Supported PHP: 8.3, 8.4, 8.5 (CI matrix). Code, comments and docs are in English
     attribute into metadata.
   - Prompt links apply only to observations of type `generation`.
   - Legacy `/api/public/ingestion` rejects trace events on v4. Do not use it for traces.
+- **Experiments on v4**: `POST /api/public/dataset-run-items` writes nothing. A run
+  exists only through `langfuse.experiment.*` attributes, and they must be on **every**
+  span of the item trace (no server-side propagation). `item.root_observation_id` must be
+  the root span ID.
+- **Media**:
+  - `sha256Hash` is base64 of the raw digest, not hex.
+  - After the presigned PUT, the `PATCH /api/public/media/{id}` report is mandatory.
+    Without it the media cannot be downloaded or used in a dataset item. Langfuse
+    deduplicates only media reported with status 200.
+  - A reference string counts only as the entire value of a JSON field.
+- Smoke tests (`examples/`) need a real instance and `.env.smoke`; agents with access
+  to one should run both after touching transport, media, datasets or experiments.
 - `Internal\*` and members marked `@internal` are not public API.

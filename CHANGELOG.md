@@ -6,6 +6,26 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0]
+
+### Added
+
+- `MediaClient`: upload files to Langfuse Media (hash, presigned upload, upload report),
+  read metadata and download content. `MediaTarget` for trace or dataset item fields,
+  `MediaReference` for the `@@@langfuseMedia:...@@@` reference strings.
+- `DatasetClient`: create and read datasets, upsert, read and list dataset items;
+  `DatasetItem::mediaReferences()`.
+- `ExperimentRun` and `Tracer::startExperimentTrace()`: traces of dataset items are
+  recorded as experiment runs through `langfuse.experiment.*` span attributes, which is
+  how Langfuse v4 builds runs.
+- `ScoreClient`: numeric, boolean, categorical and text scores on traces, observations,
+  sessions and experiment runs.
+- `FileReference` and `Observation::attachFile()`: record files sent to a model by
+  reference (ID, URL, hash) without uploading them.
+- `examples/smoke-test-experiments.php`, shared `examples/bootstrap.php`.
+
+## [0.1.0]
+
 ### Added
 
 - Prompt API client: get by label or version, create text and chat prompts, set labels.

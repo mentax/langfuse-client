@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace Mentax\LangfuseClient;
 
+use Mentax\LangfuseClient\Dataset\DatasetClient;
 use Mentax\LangfuseClient\Internal\HttpClient;
+use Mentax\LangfuseClient\Media\MediaClient;
 use Mentax\LangfuseClient\Prompt\CachedPromptProvider;
 use Mentax\LangfuseClient\Prompt\PromptClient;
+use Mentax\LangfuseClient\Score\ScoreClient;
 use Mentax\LangfuseClient\Tracing\Export\OtlpHttpExporter;
 use Mentax\LangfuseClient\Tracing\Tracer;
 use Psr\Cache\CacheItemPoolInterface;
@@ -49,6 +52,21 @@ final readonly class Langfuse
         LoggerInterface $logger = new NullLogger(),
     ): CachedPromptProvider {
         return new CachedPromptProvider($this->prompts(), $cache, $ttlSeconds, $logger);
+    }
+
+    public function media(): MediaClient
+    {
+        return new MediaClient($this->http);
+    }
+
+    public function datasets(): DatasetClient
+    {
+        return new DatasetClient($this->http);
+    }
+
+    public function scores(): ScoreClient
+    {
+        return new ScoreClient($this->http);
     }
 
     public function tracer(

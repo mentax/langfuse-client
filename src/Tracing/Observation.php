@@ -33,6 +33,9 @@ class Observation
 
     private bool $failed = false;
 
+    /** @var list<FileReference> */
+    private array $files = [];
+
     /**
      * @param array<string, mixed> $metadata
      *
@@ -149,6 +152,17 @@ class Observation
         return $this;
     }
 
+    /**
+     * Records files sent with this call, by reference only. They appear in the
+     * observation metadata under "attachments"; the bytes are never sent to Langfuse.
+     */
+    public function attachFile(FileReference ...$files): static
+    {
+        $this->files = [...$this->files, ...array_values($files)];
+
+        return $this;
+    }
+
     public function setLevel(ObservationLevel $level, ?string $statusMessage = null): static
     {
         $this->level = $level;
@@ -251,8 +265,12 @@ class Observation
         if ($this->output !== null) {
             $attributes['langfuse.observation.output'] = Json::encodeValue($this->output);
         }
-        if ($this->metadata !== []) {
-            $attributes['langfuse.observation.metadata'] = Json::encodeObject($this->metadata);
+        $metadata = $this->metadata;
+        if ($this->files !== []) {
+            $metadata['attachments'] = array_map(static fn(FileReference $file): array => $file->toArray(), $this->files);
+        }
+        if ($metadata !== []) {
+            $attributes['langfuse.observation.metadata'] = Json::encodeObject($metadata);
         }
         if ($this->level !== null) {
             $attributes['langfuse.observation.level'] = $this->level->value;
@@ -273,6 +291,39 @@ class Observation
             $attributes['langfuse.trace.public'] = $this->context->public;
         }
 
-        return $attributes + $this->tracer->globalAttributes();
+        return $attributes + $this->experimentAttributes() + $this->tracer->globalAttributes();
+    }
+
+    /**
+     * Langfuse v4 does not propagate experiment fields from the root span, so every
+     * span of an experiment item carries them.
+     *
+     * @return array<string, string>
+     */
+    private function experimentAttributes(): array
+    {
+        $run = $this->context->experimentRun;
+        if ($run === null || $this->context->experimentItemId === null || $this->context->experimentRootSpanId === null) {
+            return [];
+        }
+
+        $attributes = [
+            'langfuse.experiment.id' => $run->id,
+            'langfuse.experiment.name' => $run->name,
+            'langfuse.experiment.dataset.id' => $run->datasetId,
+            'langfuse.experiment.item.id' => $this->context->experimentItemId,
+            'langfuse.experiment.item.root_observation_id' => $this->context->experimentRootSpanId,
+        ];
+        if ($run->description !== null) {
+            $attributes['langfuse.experiment.description'] = $run->description;
+        }
+        if ($run->metadata !== []) {
+            $attributes['langfuse.experiment.metadata'] = Json::encodeObject($run->metadata);
+        }
+        if ($this->context->experimentExpectedOutput !== null) {
+            $attributes['langfuse.experiment.item.expected_output'] = Json::encodeValue($this->context->experimentExpectedOutput);
+        }
+
+        return $attributes;
     }
 }

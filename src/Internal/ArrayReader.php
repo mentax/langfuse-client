@@ -51,6 +51,21 @@ final readonly class ArrayReader
         return $value;
     }
 
+    public function nullableInt(string $key): ?int
+    {
+        $value = $this->data[$key] ?? null;
+        if ($value !== null && !is_int($value)) {
+            throw $this->invalid($key, 'an integer or null');
+        }
+
+        return $value;
+    }
+
+    public function mixed(string $key): mixed
+    {
+        return $this->data[$key] ?? null;
+    }
+
     /**
      * @return list<string>
      */

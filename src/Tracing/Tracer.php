@@ -6,6 +6,7 @@ namespace Mentax\LangfuseClient\Tracing;
 
 use DateTimeImmutable;
 use InvalidArgumentException;
+use Mentax\LangfuseClient\Dataset\DatasetItem;
 use Mentax\LangfuseClient\Internal\SystemClock;
 use Mentax\LangfuseClient\Tracing\Export\SpanExporterInterface;
 use Psr\Clock\ClockInterface;
@@ -86,6 +87,30 @@ final class Tracer
         $trace = new Trace($this, $context, null, $name, ObservationType::Span, $input, $metadata);
 
         return $trace->setUserId($userId)->setSessionId($sessionId)->addTags(...$tags);
+    }
+
+    /**
+     * Starts the trace of one dataset item in an experiment run. Everything recorded
+     * in this trace counts towards the run; score the result with ScoreClient using
+     * the trace ID.
+     *
+     * @param mixed $input defaults to the item's input
+     */
+    public function startExperimentTrace(
+        ExperimentRun $run,
+        DatasetItem $item,
+        ?string $name = null,
+        mixed $input = null,
+    ): Trace {
+        $context = new TraceContext(bin2hex(random_bytes(16)), $name ?? $run->name);
+        $context->experimentRun = $run;
+        $context->experimentItemId = $item->id;
+        $context->experimentExpectedOutput = $item->expectedOutput;
+
+        $trace = new Trace($this, $context, null, $context->name, ObservationType::Span, $input ?? $item->input, ['datasetItemId' => $item->id]);
+        $context->experimentRootSpanId = $trace->id();
+
+        return $trace;
     }
 
     /**

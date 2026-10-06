@@ -45,6 +45,11 @@ final readonly class DecodedJson
         return $this->value;
     }
 
+    public function value(): mixed
+    {
+        return $this->value;
+    }
+
     public function has(string|int $key): bool
     {
         return array_key_exists($key, $this->array());

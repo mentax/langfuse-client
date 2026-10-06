@@ -6,14 +6,17 @@
 
 **Manage your LLM prompts in [Langfuse](https://langfuse.com), not in your PHP code, and see what every model call did, cost and which prompt version produced it.**
 
-`mentax/langfuse-client` is a framework-agnostic PHP client for the two Langfuse
-features a PHP application needs at runtime:
+`mentax/langfuse-client` is a framework-agnostic PHP client for Langfuse:
 
 - **Prompt management.** Fetch prompts by label or version and compile them strictly.
   A persistent cache keeps your application running when Langfuse is not.
 - **Tracing.** Record traces and LLM generations: model, parameters, token usage, cost,
   errors and the prompt version used. They are exported over OpenTelemetry (OTLP), the
-  only trace ingestion path Langfuse v4 accepts by default.
+  only trace ingestion path Langfuse v4 accepts by default. Files sent to the model are
+  recorded by reference, so their content stays in your storage.
+- **Datasets, experiments and scores.** Build regression datasets from real cases,
+  files included (Langfuse Media), run them through your actual code as experiment
+  runs, and score the results.
 
 ```php
 $prompt = $prompts->get('support/answer-ticket');            // label "production", cached
@@ -84,12 +87,12 @@ Laminas or plain PHP, and with Symfony HttpClient, Guzzle or any other PSR-18 cl
 
 PHP libraries for Langfuse we evaluated before writing this one (state as of October 2026):
 
-| | Prompt fetch + compile | Persistent prompt cache | Traces on Langfuse v4 | Token usage on generations | Framework |
-|---|---|---|---|---|---|
-| **mentax/langfuse-client** | ✅ strict | ✅ last-known-good | ✅ OTLP | ✅ | none (PSR) |
-| [dropsolid/langfuse-php-sdk](https://gitlab.com/dropsolid/langfuse-php-sdk) 1.3 | ❌ | ❌ | ❌ legacy ingestion (OTLP in 2.0-alpha) | ✅ | none |
-| [dij-digital/langfuse-php](https://github.com/dij-digital/langfuse-php) 0.2 | ✅ | ❌ | ❌ legacy ingestion | ❌ | none |
-| [axyr/laravel-langfuse](https://github.com/axyr/laravel-langfuse) 0.4 | ✅ | in-memory only | ✅ OTLP | ✅ | Laravel |
+| | Prompt fetch + compile | Persistent prompt cache | Traces on Langfuse v4 | Token usage on generations | Datasets + media | Framework |
+|---|---|---|---|---|---|---|
+| **mentax/langfuse-client** | ✅ strict | ✅ last-known-good | ✅ OTLP | ✅ | ✅ | none (PSR) |
+| [dropsolid/langfuse-php-sdk](https://gitlab.com/dropsolid/langfuse-php-sdk) 1.3 | ❌ | ❌ | ❌ legacy ingestion (OTLP in 2.0-alpha) | ✅ | ❌ | none |
+| [dij-digital/langfuse-php](https://github.com/dij-digital/langfuse-php) 0.2 | ✅ | ❌ | ❌ legacy ingestion | ❌ | ❌ | none |
+| [axyr/laravel-langfuse](https://github.com/axyr/laravel-langfuse) 0.4 | ✅ | in-memory only | ✅ OTLP | ✅ | datasets only | Laravel |
 
 All of them are good work and taught us something; see [Inspiration](#inspiration).
 Pick axyr if you are on Laravel and want auto-instrumentation of Prism or Laravel AI.
@@ -236,6 +239,92 @@ $tracer->flush();
 **Inputs and outputs are sent in full.** If they contain personal data, decide what
 to trace, and restrict who can access the Langfuse project.
 
+### Files sent to the model: reference, don't copy
+
+In production, record *which* files a call used, not the files themselves:
+
+```php
+use Mentax\LangfuseClient\Tracing\FileReference;
+
+$generation->attachFile(
+    FileReference::fromLocalFile($path, id: (string) $document->getId(), url: $documentViewerUrl),
+);
+```
+
+The observation's metadata gets `attachments: [{id, name, mimeType, url, sha256, size}]`.
+The bytes stay in your storage, behind your access control. Point `url` at a page
+of your application that checks permissions, never at a public link.
+`FileReference::toMarkdown()` renders an inline image or a link if you want the file
+visible inside an input or output text.
+
+## Datasets and experiments
+
+Regression tests for prompts: a dataset of real cases with expected results, and
+experiment runs that execute your actual code against it. Two things happen in one
+workflow:
+
+1. **Curate.** Copy selected cases into a dataset, files included. Upload the files to
+   Langfuse Media so the dataset is a frozen snapshot that does not depend on
+   production storage.
+2. **Run.** Execute each item through your real code path (same files, same parser),
+   record it as an experiment run, and score the result. Compare runs side by side in
+   the Langfuse UI.
+
+```php
+use Mentax\LangfuseClient\Media\MediaTarget;
+use Mentax\LangfuseClient\Tracing\ExperimentRun;
+
+$datasets = $langfuse->datasets();
+$dataset = $datasets->createDataset('damageaudit/airbag-photo');
+
+// 1. Curate: upload first (the item may not exist yet), then write the item
+$itemId = 'airbag-' . $auditId;
+$photo = $langfuse->media()->uploadFile($photoPath, MediaTarget::datasetItem($dataset->id, $itemId));
+$datasets->upsertItem(
+    $dataset->name,
+    input: ['documents_count' => 1, 'photo' => (string) $photo], // a reference must be the whole value
+    expectedOutput: ['result' => true],
+    id: $itemId,
+    sourceTraceId: $productionTraceId,
+);
+
+// 2. Run
+$run = new ExperimentRun($dataset->id, 'prompt v8 / gemini-3.5-flash', metadata: ['promptVersion' => 8]);
+foreach ($datasets->items($dataset->name) as $item) {
+    $trace = $tracer->startExperimentTrace($run, $item);
+    $photoBytes = $langfuse->media()->download($item->mediaReferences()['input.photo']);
+
+    $result = $airbagRule->run($photoBytes, $trace);  // your code, traced as usual
+    $trace->end($result);
+
+    $langfuse->scores()->create('correct', $result === $item->expectedOutput, traceId: $trace->traceId());
+}
+$tracer->flush();
+```
+
+Because the dataset items carry Langfuse media references, the same dataset also works
+for experiments started from the Langfuse UI, where Langfuse passes the files to the
+model itself.
+
+Things worth knowing:
+
+- Langfuse deduplicates media by content hash, so the same photo in many items is stored once.
+- A media reference is recognised only as the entire value of a JSON field.
+- In Langfuse v4 an experiment run is defined by the traces that belong to it; there is
+  nothing to create up front. `ExperimentRun` derives a stable ID from dataset and name,
+  so reusing a name adds to that run. Give each run a new name.
+
+## Scores
+
+```php
+$scores = $langfuse->scores();
+$scores->create('correct', true, traceId: $trace->traceId());                     // BOOLEAN
+$scores->create('quality', 0.8, traceId: $traceId, observationId: $generationId);  // NUMERIC
+$scores->create('verdict', 'regression', experimentRunId: $run->id);               // CATEGORICAL
+```
+
+Scores are sent immediately, one request each. Pass `id` to make retries idempotent.
+
 ## Inspiration
 
 This package stands on the shoulders of others:
@@ -258,9 +347,8 @@ No code was copied. The design decisions were informed by reading all of the abo
 
 ## Roadmap
 
-- Scores API (send evaluation results and user feedback)
-- Datasets and experiment runs, for regression-testing prompt versions against real code paths
-- Media uploads (images and PDFs attached to traces)
+- Console commands (prompt check/refresh, dataset curation, experiment runner skeleton)
+- Optional Symfony bundle for wiring and `kernel.terminate` flushing
 
 Issues and pull requests are welcome.
 
@@ -268,9 +356,12 @@ Issues and pull requests are welcome.
 
 ```bash
 composer install
-composer check                # php-cs-fixer (dry run), PHPStan (level max), PHPUnit
-php examples/smoke-test.php   # end-to-end against a real instance, see the file header
+composer check                             # php-cs-fixer (dry run), PHPStan (level max), PHPUnit
+php examples/smoke-test.php                # prompts and tracing against a real instance
+php examples/smoke-test-experiments.php    # media, datasets, experiment runs and scores
 ```
+
+The smoke tests read credentials of a test project from `.env.smoke` (see `examples/bootstrap.php`).
 
 ## License
 

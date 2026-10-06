@@ -11,7 +11,7 @@ declare(strict_types=1);
  *   LANGFUSE_PUBLIC_KEY=pk-lf-...
  *   LANGFUSE_SECRET_KEY=sk-lf-...
  *
- * then run: php examples/smoke-test.php
+ * then run: php examples/smoke-test.php (see also smoke-test-experiments.php)
  *
  * It adds a version to the text prompt "mentax-langfuse-client/smoke-test" (label
  * "smoke-test"), reads it back through the cache, sends one trace with a generation
@@ -19,48 +19,16 @@ declare(strict_types=1);
  * Exit code 0 means all checks passed.
  */
 
-use Mentax\LangfuseClient\Langfuse;
-use Mentax\LangfuseClient\LangfuseConfig;
 use Mentax\LangfuseClient\Prompt\TextPrompt;
 use Mentax\LangfuseClient\Tracing\Usage;
-use Psr\Log\AbstractLogger;
 use Symfony\Component\Cache\Adapter\FilesystemAdapter;
-use Symfony\Component\HttpClient\HttpClient;
-use Symfony\Component\HttpClient\Psr18Client;
 
-require __DIR__ . '/../vendor/autoload.php';
+require __DIR__ . '/bootstrap.php';
 
-$envFile = __DIR__ . '/../.env.smoke';
-if (is_file($envFile)) {
-    $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    foreach ($lines === false ? [] : $lines as $line) {
-        if (str_starts_with(trim($line), '#') || !str_contains($line, '=')) {
-            continue;
-        }
-        [$key, $value] = explode('=', $line, 2);
-        $_ENV[trim($key)] = trim($value);
-    }
-}
-
-$logger = new class extends AbstractLogger {
-    public int $errors = 0;
-
-    public function log($level, string|Stringable $message, array $context = []): void
-    {
-        if ($level === 'error') {
-            ++$this->errors;
-        }
-        $exception = $context['exception'] ?? null;
-        $levelName = is_string($level) ? $level : get_debug_type($level);
-        fwrite(STDERR, sprintf("[%s] %s%s\n", $levelName, $message, $exception instanceof Throwable ? ' ' . $exception->getMessage() : ''));
-    }
-};
-
-$config = LangfuseConfig::fromEnvironment();
-$symfonyClient = HttpClient::create(['timeout' => 5]);
-$psr18 = new Psr18Client($symfonyClient);
-$langfuse = new Langfuse($config, $psr18, $psr18, $psr18);
-printf("Langfuse: %s\n", $config->host);
+$smoke = Smoke::create();
+$langfuse = $smoke->langfuse;
+$logger = $smoke->logger;
+printf("Langfuse: %s\n", $smoke->config->host);
 
 // 1. Prompts
 $name = 'mentax-langfuse-client/smoke-test';
@@ -107,15 +75,11 @@ $waited = 0;
 while ($waited < 60) {
     sleep(2);
     $waited += 2;
-    $response = $symfonyClient->request('GET', $config->url('/api/public/v2/observations'), [
-        'auth_basic' => [$config->publicKey, $config->secretKey],
-        'query' => ['traceId' => $trace->traceId(), 'fields' => 'core,basic,io,model,usage,prompt,trace_context'],
+    $response = $smoke->get('/api/public/v2/observations', [
+        'traceId' => $trace->traceId(),
+        'fields' => 'core,basic,io,model,usage,prompt,trace_context',
     ]);
-    if ($response->getStatusCode() !== 200) {
-        fwrite(STDERR, sprintf("Read-back failed with HTTP %d: %s\n", $response->getStatusCode(), $response->getContent(false)));
-        exit(1);
-    }
-    $data = $response->toArray()['data'] ?? [];
+    $data = $response['data'] ?? [];
     $observations = is_array($data) ? $data : [];
     if (count($observations) >= 3) {
         break;
@@ -141,7 +105,7 @@ $contains = static function (mixed $value, string $needle): bool {
 $number = static fn(mixed $value): ?int => is_numeric($value) ? (int) $value : null;
 $usage = is_array($gen['usageDetails'] ?? null) ? $gen['usageDetails'] : [];
 
-$checks = [
+Smoke::report([
     'root span exists' => $root !== [],
     'generation exists' => $gen !== [],
     'event exists' => $event !== [],
@@ -159,16 +123,4 @@ $checks = [
     'user id' => ($gen['userId'] ?? null) === 'smoke-user',
     'tags' => in_array('smoke-test', is_array($gen['tags'] ?? null) ? $gen['tags'] : [], true),
     'release' => ($gen['release'] ?? null) === 'local',
-];
-
-$failed = 0;
-foreach ($checks as $label => $ok) {
-    printf("  [%s] %s\n", $ok ? 'PASS' : 'FAIL', $label);
-    $failed += $ok ? 0 : 1;
-}
-
-if ($failed > 0) {
-    fwrite(STDERR, "\nRaw observations for diagnosis:\n" . json_encode($observations, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
-    exit(1);
-}
-echo "\nAll checks passed.\n";
+], $observations);
