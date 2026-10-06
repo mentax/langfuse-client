@@ -8,6 +8,8 @@ use Mentax\LangfuseClient\Exception\NotFoundException;
 use Mentax\LangfuseClient\Exception\TransportException;
 use Mentax\LangfuseClient\Prompt\CachedPromptProvider;
 use Mentax\LangfuseClient\Prompt\PromptClient;
+use Mentax\LangfuseClient\Prompt\PromptMetadata;
+use Mentax\LangfuseClient\Prompt\PromptType;
 use Mentax\LangfuseClient\Tests\Support\Factory;
 use Mentax\LangfuseClient\Tests\Support\FakeHttpClient;
 use Mentax\LangfuseClient\Tests\Support\FrozenClock;
@@ -35,12 +37,12 @@ final class CachedPromptProviderTest extends TestCase
         $this->cache = new ArrayAdapter();
     }
 
-    private function provider(?CacheItemPoolInterface $cache = null): CachedPromptProvider
+    private function provider(?CacheItemPoolInterface $cache = null, ?int $ttlSeconds = 600): CachedPromptProvider
     {
         return new CachedPromptProvider(
             new PromptClient(Factory::http($this->http)),
             $cache ?? $this->cache,
-            ttlSeconds: 600,
+            ttlSeconds: $ttlSeconds,
             logger: $this->logger,
             clock: $this->clock,
         );
@@ -118,6 +120,56 @@ final class CachedPromptProviderTest extends TestCase
 
         $this->expectException(NotFoundException::class);
         $provider->refresh('p');
+    }
+
+    public function testNullTtlNeverRefetches(): void
+    {
+        $this->http->respondJson(Factory::textPromptResponse());
+        $provider = $this->provider(ttlSeconds: null);
+
+        $provider->get('p');
+        $this->clock->advance(86400 * 365);
+        $provider->get('p');
+
+        self::assertCount(1, $this->http->requests);
+    }
+
+    public function testRefreshAllRefreshesEveryLabelAndContinuesAfterFailure(): void
+    {
+        $this->http
+            ->respondJson(Factory::textPromptResponse(['version' => 5]))
+            ->respond(503, 'maintenance')
+            ->respondJson(Factory::textPromptResponse(['version' => 2]));
+        $provider = $this->provider(ttlSeconds: null);
+
+        $report = $provider->refreshAll([
+            new PromptMetadata('a', PromptType::Text, [4, 5], ['production', 'latest']),
+            new PromptMetadata('b', PromptType::Text, [2], ['production']),
+        ]);
+
+        self::assertSame([['name' => 'a', 'label' => 'production', 'version' => 5], ['name' => 'b', 'label' => 'production', 'version' => 2]], $report->refreshed);
+        self::assertSame('a', $report->failed[0]['name']);
+        self::assertSame('latest', $report->failed[0]['label']);
+        self::assertFalse($report->isComplete());
+        self::assertCount(1, $this->logger->messages('error'));
+
+        self::assertSame(5, $provider->get('a')->version);
+        self::assertSame(2, $provider->get('b', 'production')->version);
+        self::assertCount(3, $this->http->requests, 'Refreshed entries are served from the cache.');
+    }
+
+    public function testRefreshAllCanBeLimitedToLabels(): void
+    {
+        $this->http->respondJson(Factory::textPromptResponse());
+
+        $report = $this->provider()->refreshAll(
+            [new PromptMetadata('a', PromptType::Text, [3], ['production', 'latest', 'staging'])],
+            labels: ['production', 'canary'],
+        );
+
+        self::assertSame([['name' => 'a', 'label' => 'production', 'version' => 3]], $report->refreshed);
+        self::assertTrue($report->isComplete());
+        self::assertSame('label=production', $this->http->lastRequest()->getUri()->getQuery());
     }
 
     public function testVersionPinnedPromptIsFetchedOnce(): void

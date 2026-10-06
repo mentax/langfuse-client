@@ -29,6 +29,8 @@ evidence behind them. Read it before changing transport, caching, media or exper
 - **Prompt cache entries never expire in the pool.** Freshness is decided by the
   stored `fetchedAt` and the TTL. A failed refresh, including a 404, serves the
   stale entry. Do not add `expiresAfter()` and do not delete entries on 404.
+  A null TTL means "never stale"; `refreshAll()` (scheduled job) reports per-label
+  failures and must not stop at the first one.
 - **Strict `compile()` is intended.** Missing *and* unexpected variables throw.
   Substitution is single-pass (`preg_replace_callback`); never switch to
   `str_replace`, which re-expands values.

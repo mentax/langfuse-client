@@ -29,7 +29,7 @@ $tracer->flush();                                                  // never thro
 
 ## Why this package
 
-We built it for our own Symfony applications, which call Gemini through a shared
+We built it for our own Symfony applications, which call Ai models through a shared
 in-house client. Our requirements were simple: move prompts out of the repositories,
 let product people iterate on them in Langfuse, and never let Langfuse take production
 down. No existing PHP library did all of that, so we wrote one.
@@ -46,6 +46,8 @@ built around that fact:
 - When a refresh fails, the last version that worked is served and a warning is
   logged. That covers a timeout, a 5xx, and a 404 because someone deleted the prompt.
   Cache entries never expire on their own.
+- Optionally, Langfuse leaves the request path entirely: a scheduled job refreshes all
+  prompts of the project, and the application only reads the cache.
 - Tracing never throws into your code. A failed export is logged and dropped: no
   retries, no blocking `sleep()` in your request path.
 
@@ -160,13 +162,104 @@ just a new prompt version, tested and promoted like any other prompt change.
 |---|---|
 | Cached entry younger than the TTL | Served from cache; Langfuse is not called |
 | Entry older than the TTL | Fetched from Langfuse; the cache is updated |
+| `ttlSeconds: null`, entry exists | Served from cache, however old; Langfuse is not called |
 | Fetch fails (network, 5xx, 404 after deletion), entry exists | Cached entry served, warning logged |
 | Fetch fails, nothing cached | Exception thrown |
 | Version-pinned prompt | Fetched once; versions never change |
 
-`refresh()` fetches immediately and throws instead of falling back. Call it in your
-deployment to warm the cache and fail the deploy when a prompt is missing. You can
-also call it to roll out a label change without waiting for the TTL.
+`refresh()` fetches one prompt immediately and throws instead of falling back. Call
+it in your deployment to warm the cache and fail the deploy when a prompt is missing.
+You can also call it to roll out a label change without waiting for the TTL.
+
+### Refreshing all prompts from a scheduled job
+
+With a TTL, the first request after the TTL expires calls Langfuse, and with a
+timeout set, waits for it. With `ttlSeconds: null`, the application never calls Langfuse
+for a prompt it has cached. A scheduled job refreshes the whole project instead:
+
+```php
+// bin/refresh-prompts.php
+$prompts = $langfuse->cachedPrompts(
+    new FilesystemAdapter('langfuse', 0, '/var/shared/cache'), // the application's pool
+    ttlSeconds: null,
+    logger: $logger,
+);
+
+$report = $prompts->refreshAll($langfuse->prompts()->list());
+
+foreach ($report->failed as $failure) {
+    fwrite(STDERR, sprintf("%s (%s): %s\n", $failure['name'], $failure['label'], $failure['reason']));
+}
+exit($report->isComplete() ? 0 : 1);
+```
+
+```cron
+*/5 * * * * www-data php /srv/app/bin/refresh-prompts.php
+```
+
+The application uses the same pool with `ttlSeconds: null`, and calls `get()` as before.
+
+**Which prompts are refreshed.** `list()` returns every prompt of the Langfuse project
+the API keys belong to. `refreshAll()` fetches every label of each of them, `latest`
+included, and writes it to the cache. Both filters are optional:
+
+```php
+$prompts->refreshAll($client->list(tag: 'crm'));                     // only prompts tagged "crm"
+$prompts->refreshAll($client->list(), labels: ['production']);       // only the labels your code uses
+$prompts->refreshAll($client->list(label: 'production'), labels: ['production']);
+```
+
+Use the tag filter when several applications share one project. Without it, each
+application also caches the others' prompts; this is harmless, but unnecessary.
+
+**What the report contains.** `$report->refreshed` lists
+`['name' => ..., 'label' => ..., 'version' => ...]` for every label written to the
+cache. `$report->failed` lists `['name' => ..., 'label' => ..., 'reason' => ...]` for
+labels that could not be fetched or stored. Each failure is also logged as an error.
+A failure does not stop the job: the other labels are still refreshed, and the
+application keeps serving the previous entry of the failed one.
+
+Things worth knowing:
+
+- **The job and the application must share the cache.** Same storage, same pool
+  namespace, same `keyPrefix`. A `FilesystemAdapter` on local disk is per server, so
+  with several web servers run the job on each of them, or use shared storage or Redis.
+- **Monitor the job.** With a null TTL nothing else refreshes the prompts. If the job
+  stops, the application keeps serving old versions, and nothing in the application
+  reports it. Alert on a non-zero exit code.
+- **Cache misses still call Langfuse.** A prompt that is not cached yet, for example
+  right after a deployment to an empty cache, is fetched on first use. To avoid that,
+  run the job as a deployment step, before traffic arrives.
+- **Cost.** Langfuse has no bulk endpoint for prompt content, so one run makes one
+  request per prompt label, plus one per 100 prompts for the list.
+- **Deleted prompts.** A prompt deleted in Langfuse disappears from the list, and its
+  cache entry stays in use, the same as with a TTL.
+- **Label changes** reach the application on the next run. Call `refresh()` for an
+  urgent rollout.
+
+In a Symfony application the job is a console command, scheduled by cron or
+Symfony Scheduler:
+
+```php
+#[AsCommand('app:langfuse:refresh-prompts')]
+final class RefreshPromptsCommand extends Command
+{
+    public function __construct(
+        private readonly Langfuse $langfuse,
+        private readonly CachedPromptProvider $prompts, // the service the application uses
+    ) {
+        parent::__construct();
+    }
+
+    protected function execute(InputInterface $input, OutputInterface $output): int
+    {
+        $report = $this->prompts->refreshAll($this->langfuse->prompts()->list());
+        $output->writeln(sprintf('%d refreshed, %d failed', count($report->refreshed), count($report->failed)));
+
+        return $report->isComplete() ? Command::SUCCESS : Command::FAILURE;
+    }
+}
+```
 
 ### Chat prompts and placeholders
 
@@ -193,7 +286,15 @@ $version = $client->createText(
     commitMessage: 'Import from repository',
 );
 $client->setLabels('damageaudit/vin', $version->version, ['production']); // promote
+
+foreach ($client->list(tag: 'damageaudit') as $prompt) {                  // PromptMetadata
+    printf("%s (%s): versions %s, labels %s\n", $prompt->name, $prompt->type->value,
+        implode(',', $prompt->versions), implode(',', $prompt->labels));
+}
 ```
+
+`list()` returns metadata only (name, type, versions, labels, tags), page by page.
+Fetch the content with `get()`.
 
 ## Tracing
 
@@ -239,6 +340,10 @@ $tracer->flush();
 **Inputs and outputs are sent in full.** If they contain personal data, decide what
 to trace, and restrict who can access the Langfuse project.
 
+**Text that is not valid UTF-8** (for example Windows-1250 data, or binary bytes in an
+exception message) is sent with the invalid bytes replaced by `�`. It does not make
+the export fail.
+
 ### Files sent to the model: reference, don't copy
 
 In production, record *which* files a call used, not the files themselves:
@@ -282,7 +387,7 @@ $itemId = 'airbag-' . $auditId;
 $photo = $langfuse->media()->uploadFile($photoPath, MediaTarget::datasetItem($dataset->id, $itemId));
 $datasets->upsertItem(
     $dataset->name,
-    input: ['documents_count' => 1, 'photo' => (string) $photo], // a reference must be the whole value
+    input: ['documents_count' => 1, 'photo' => $photo], // a reference must be the whole value
     expectedOutput: ['result' => true],
     id: $itemId,
     sourceTraceId: $productionTraceId,
@@ -310,6 +415,9 @@ Things worth knowing:
 
 - Langfuse deduplicates media by content hash, so the same photo in many items is stored once.
 - A media reference is recognised only as the entire value of a JSON field.
+  A `MediaReference` object can be placed in input, output or a dataset item
+  directly; it is written as its `@@@langfuseMedia:...@@@` string.
+- `items()` returns active items only; archived ones are skipped.
 - In Langfuse v4 an experiment run is defined by the traces that belong to it; there is
   nothing to create up front. `ExperimentRun` derives a stable ID from dataset and name,
   so reusing a name adds to that run. Give each run a new name.

@@ -12,6 +12,8 @@ use Mentax\LangfuseClient\Exception\TransportException;
 use Mentax\LangfuseClient\Prompt\ChatMessage;
 use Mentax\LangfuseClient\Prompt\MessagePlaceholder;
 use Mentax\LangfuseClient\Prompt\PromptClient;
+use Mentax\LangfuseClient\Prompt\PromptMetadata;
+use Mentax\LangfuseClient\Prompt\PromptType;
 use Mentax\LangfuseClient\Tests\Support\Factory;
 use Mentax\LangfuseClient\Tests\Support\FakeHttpClient;
 use PHPUnit\Framework\TestCase;
@@ -91,6 +93,38 @@ final class PromptClientTest extends TestCase
 
         $this->expectException(TransportException::class);
         $this->client->get('p');
+    }
+
+    public function testListFollowsPaginationAndPassesFilters(): void
+    {
+        $entry = static fn(string $name): array => [
+            'name' => $name,
+            'type' => 'text',
+            'versions' => [1, 2],
+            'labels' => ['latest', 'production'],
+            'tags' => [],
+            'lastUpdatedAt' => '2026-10-06T10:40:09.817Z',
+            'lastConfig' => [],
+        ];
+        $this->http
+            ->respondJson(['data' => [$entry('a')], 'meta' => ['page' => 1, 'limit' => 100, 'totalItems' => 2, 'totalPages' => 2]])
+            ->respondJson(['data' => [$entry('b')], 'meta' => ['page' => 2, 'limit' => 100, 'totalItems' => 2, 'totalPages' => 2]]);
+
+        $prompts = iterator_to_array($this->client->list(tag: 'damageaudit'), false);
+
+        self::assertSame(['a', 'b'], array_map(static fn(PromptMetadata $prompt): string => $prompt->name, $prompts));
+        self::assertSame(PromptType::Text, $prompts[0]->type);
+        self::assertSame([1, 2], $prompts[0]->versions);
+        self::assertSame(['latest', 'production'], $prompts[0]->labels);
+        self::assertSame('tag=damageaudit&page=2&limit=100', $this->http->lastRequest()->getUri()->getQuery());
+    }
+
+    public function testListOfEmptyProjectMakesOneRequest(): void
+    {
+        $this->http->respondJson(['data' => [], 'meta' => ['page' => 1, 'limit' => 100, 'totalItems' => 0, 'totalPages' => 0]]);
+
+        self::assertSame([], iterator_to_array($this->client->list(), false));
+        self::assertCount(1, $this->http->requests);
     }
 
     public function testCreateTextSendsConfigAsObject(): void

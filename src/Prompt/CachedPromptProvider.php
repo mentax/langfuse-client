@@ -21,6 +21,8 @@ use Psr\Log\NullLogger;
  *   logged. Entries never expire from the cache on their own.
  * - With no cached entry, a failed fetch throws.
  * - A version-pinned prompt never changes in Langfuse, so it is fetched once.
+ * - With a null TTL, cached entries are always served and Langfuse is called only on
+ *   a cache miss. Keep them current with refreshAll() from a scheduled job.
  *
  * Use a persistent pool (e.g. Symfony FilesystemAdapter on shared storage) so that
  * a restart does not empty it.
@@ -31,10 +33,13 @@ final readonly class CachedPromptProvider implements PromptProviderInterface
 
     private ClockInterface $clock;
 
+    /**
+     * @param int|null $ttlSeconds age after which an entry is refetched; null: never
+     */
     public function __construct(
         private PromptProviderInterface $inner,
         private CacheItemPoolInterface $cache,
-        private int $ttlSeconds = self::DEFAULT_TTL_SECONDS,
+        private ?int $ttlSeconds = self::DEFAULT_TTL_SECONDS,
         private LoggerInterface $logger = new NullLogger(),
         ?ClockInterface $clock = null,
         private string $keyPrefix = 'langfuse_prompt.',
@@ -78,17 +83,63 @@ final readonly class CachedPromptProvider implements PromptProviderInterface
         return $this->fetchAndStore($name, $label, $version);
     }
 
+    /**
+     * Refreshes every label of every listed prompt, for a scheduled job:
+     *
+     *     $report = $provider->refreshAll($langfuse->prompts()->list());
+     *
+     * A failure for one label is logged and reported; the others are still refreshed,
+     * and the cache keeps serving the previous entry of the failed one.
+     *
+     * @param iterable<PromptMetadata> $prompts
+     * @param list<string>|null $labels refresh only these labels; null: all labels of each prompt
+     */
+    public function refreshAll(iterable $prompts, ?array $labels = null): PromptRefreshReport
+    {
+        $refreshed = [];
+        $failed = [];
+        foreach ($prompts as $metadata) {
+            $promptLabels = $labels === null ? $metadata->labels : array_intersect($metadata->labels, $labels);
+            foreach ($promptLabels as $label) {
+                try {
+                    $prompt = $this->inner->get($metadata->name, $label);
+                } catch (LangfuseException $e) {
+                    $this->logger->error('Langfuse prompt refresh failed, the cached version stays in use.', ['prompt' => $metadata->name, 'label' => $label, 'exception' => $e]);
+                    $failed[] = ['name' => $metadata->name, 'label' => $label, 'reason' => $e->getMessage()];
+
+                    continue;
+                }
+                if (!$this->store($metadata->name, $label, null, $prompt)) {
+                    $failed[] = ['name' => $metadata->name, 'label' => $label, 'reason' => 'cache write failed'];
+
+                    continue;
+                }
+                $refreshed[] = ['name' => $metadata->name, 'label' => $label, 'version' => $prompt->version];
+            }
+        }
+
+        return new PromptRefreshReport($refreshed, $failed);
+    }
+
     private function fetchAndStore(string $name, ?string $label, ?int $version): TextPrompt|ChatPrompt
     {
         $prompt = $this->inner->get($name, $label, $version);
+        $this->store($name, $label, $version, $prompt);
 
+        return $prompt;
+    }
+
+    private function store(string $name, ?string $label, ?int $version, TextPrompt|ChatPrompt $prompt): bool
+    {
         $item = $this->cache->getItem($this->key($name, $label, $version));
         $item->set(['fetchedAt' => $this->clock->now()->getTimestamp(), 'prompt' => $prompt->toArray()]);
         if (!$this->cache->save($item)) {
             $this->logger->warning('Could not write a Langfuse prompt to the cache.', ['prompt' => $name, 'label' => $label]);
+
+            return false;
         }
 
-        return $prompt;
+        return true;
     }
 
     /**
@@ -115,7 +166,7 @@ final readonly class CachedPromptProvider implements PromptProviderInterface
 
     private function isFresh(int $fetchedAt): bool
     {
-        return $this->clock->now()->getTimestamp() - $fetchedAt < $this->ttlSeconds;
+        return $this->ttlSeconds === null || $this->clock->now()->getTimestamp() - $fetchedAt < $this->ttlSeconds;
     }
 
     /**

@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace Mentax\LangfuseClient\Prompt;
 
+use Generator;
 use InvalidArgumentException;
 use Mentax\LangfuseClient\Exception\LangfuseException;
 use Mentax\LangfuseClient\Exception\NotFoundException;
+use Mentax\LangfuseClient\Internal\ArrayReader;
 use Mentax\LangfuseClient\Internal\HttpClient;
 
 /**
@@ -16,6 +18,8 @@ use Mentax\LangfuseClient\Internal\HttpClient;
 final readonly class PromptClient implements PromptProviderInterface
 {
     public const DEFAULT_LABEL = 'production';
+
+    private const PAGE_SIZE = 100;
 
     public function __construct(
         private HttpClient $http,
@@ -37,6 +41,33 @@ final readonly class PromptClient implements PromptProviderInterface
             self::promptPath($name),
             ['label' => $label, 'version' => $version],
         ));
+    }
+
+    /**
+     * All prompts of the project, fetched page by page. Metadata only: Langfuse has no
+     * bulk endpoint for prompt content, so each version must be fetched with get().
+     *
+     * @param string|null $label only prompts that have this label on some version
+     * @param string|null $tag only prompts with this tag
+     *
+     * @return Generator<int, PromptMetadata>
+     *
+     * @throws LangfuseException
+     */
+    public function list(?string $label = null, ?string $tag = null): Generator
+    {
+        $page = 1;
+        do {
+            $response = new ArrayReader(
+                $this->http->get('/api/public/v2/prompts', ['label' => $label, 'tag' => $tag, 'page' => $page, 'limit' => self::PAGE_SIZE]),
+                'Langfuse prompt list',
+            );
+            foreach ($response->listOfArrays('data') as $prompt) {
+                yield PromptMetadata::fromArray($prompt);
+            }
+            $totalPages = (new ArrayReader($response->map('meta'), 'Langfuse prompt list meta'))->int('totalPages');
+            ++$page;
+        } while ($page <= $totalPages);
     }
 
     /**

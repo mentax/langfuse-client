@@ -45,10 +45,13 @@ final readonly class Langfuse
 
     /**
      * Prompt provider for runtime use: serves cached prompts and survives Langfuse outages.
+     *
+     * @param int|null $ttlSeconds null: never refetch on its own; refresh the cache with
+     *                             CachedPromptProvider::refreshAll() from a scheduled job
      */
     public function cachedPrompts(
         CacheItemPoolInterface $cache,
-        int $ttlSeconds = CachedPromptProvider::DEFAULT_TTL_SECONDS,
+        ?int $ttlSeconds = CachedPromptProvider::DEFAULT_TTL_SECONDS,
         LoggerInterface $logger = new NullLogger(),
     ): CachedPromptProvider {
         return new CachedPromptProvider($this->prompts(), $cache, $ttlSeconds, $logger);

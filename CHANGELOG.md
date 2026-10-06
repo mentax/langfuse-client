@@ -6,6 +6,26 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `PromptClient::list()`: all prompts of the project as `PromptMetadata`, optionally
+  filtered by label or tag.
+- `CachedPromptProvider` accepts `ttlSeconds: null`: cached prompts never go stale,
+  and Langfuse is called only on a cache miss.
+- `CachedPromptProvider::refreshAll()` for a scheduled job: refreshes every label of
+  the listed prompts, continues after individual failures and returns a
+  `PromptRefreshReport`.
+
+### Fixed
+
+- Invalid UTF-8 in an observation (name, status message, input/output string, user ID,
+  tags) no longer makes the export request unencodable and drops the whole batch;
+  invalid bytes are replaced with U+FFFD.
+- `DatasetClient::items()` skips archived items, as documented.
+- `MediaReference` implements `JsonSerializable`, so a reference nested in input,
+  output or a dataset item is written as the `@@@langfuseMedia:...@@@` string instead
+  of a JSON object.
+
 ## [0.2.0]
 
 ### Added

@@ -86,6 +86,25 @@ final readonly class ArrayReader
     }
 
     /**
+     * @return list<int>
+     */
+    public function intList(string $key): array
+    {
+        $value = $this->data[$key] ?? [];
+        if (!is_array($value) || !array_is_list($value)) {
+            throw $this->invalid($key, 'a list of integers');
+        }
+        foreach ($value as $item) {
+            if (!is_int($item)) {
+                throw $this->invalid($key, 'a list of integers');
+            }
+        }
+
+        /** @var list<int> $value */
+        return $value;
+    }
+
+    /**
      * Missing and null both read as an empty map.
      *
      * @return array<string, mixed>

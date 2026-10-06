@@ -14,7 +14,8 @@ declare(strict_types=1);
  * then run: php examples/smoke-test.php (see also smoke-test-experiments.php)
  *
  * It adds a version to the text prompt "mentax-langfuse-client/smoke-test" (label
- * "smoke-test"), reads it back through the cache, sends one trace with a generation
+ * "smoke-test"), reads it back through the cache, refreshes a TTL-less cache from the
+ * prompt list (scheduled-job mode), sends one trace with a generation
  * linked to that prompt, then reads the trace back from the API and checks every field.
  * Exit code 0 means all checks passed.
  */
@@ -49,6 +50,11 @@ if (!$prompt instanceof TextPrompt) {
 }
 $text = $prompt->compile(['count' => 3, 'object' => 'a car']);
 printf("Compiled v%d: %s\n", $prompt->version, $text);
+
+// Scheduled-job mode: no TTL, the whole cache refreshed from the prompt list.
+$scheduledCache = $langfuse->cachedPrompts(new FilesystemAdapter('langfuse-smoke-cron', 0, sys_get_temp_dir() . '/langfuse-smoke'), ttlSeconds: null, logger: $logger);
+$report = $scheduledCache->refreshAll($langfuse->prompts()->list(label: 'smoke-test'), labels: ['smoke-test']);
+printf("refreshAll: %d refreshed, %d failed\n", count($report->refreshed), count($report->failed));
 
 // 2. Tracing
 $tracer = $langfuse->tracer(environment: 'smoke-test', release: 'local', logger: $logger);
@@ -106,6 +112,8 @@ $number = static fn(mixed $value): ?int => is_numeric($value) ? (int) $value : n
 $usage = is_array($gen['usageDetails'] ?? null) ? $gen['usageDetails'] : [];
 
 Smoke::report([
+    'refreshAll complete' => $report->isComplete(),
+    'refreshAll stored the new version' => in_array(['name' => $name, 'label' => 'smoke-test', 'version' => $created->version], $report->refreshed, true),
     'root span exists' => $root !== [],
     'generation exists' => $gen !== [],
     'event exists' => $event !== [],

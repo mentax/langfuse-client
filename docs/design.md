@@ -84,7 +84,12 @@ The exporter sends OTLP JSON in the shape the Langfuse server parses:
 
 **Failure policy:** tracing must never break the traced code. `flush()` and
 `shutdown()` catch every `Throwable`, log it and drop the batch. Values that cannot
-be encoded degrade instead of throwing. Ended observations are buffered and flushed
+be encoded degrade instead of throwing. Because a batch is encoded as one request
+body, a single invalid UTF-8 byte would drop up to `batchSize` observations from
+unrelated traces. `OtlpEncoder` therefore replaces invalid sequences with U+FFFD in
+every string it emits. `HttpClient` deliberately does not: for the REST API
+(datasets, prompts, scores) a loud encoding error beats silently altered data.
+Ended observations are buffered and flushed
 explicitly (`kernel.terminate`, after each Messenger message, at the end of a CLI
 command) or automatically when `batchSize` is reached.
 
@@ -110,6 +115,18 @@ is built to absorb that:
 - A version-pinned prompt is fetched once, since versions are immutable.
 - `refresh()` fetches immediately and throws instead of falling back. It is meant for
   deploy-time warm-up and for rolling out a label change without waiting for the TTL.
+- A null TTL takes Langfuse out of the request path except on a cache miss. A
+  scheduled job then calls `refreshAll($client->list())`. The unit is the whole
+  project: API keys are project-scoped, so the list never crosses projects. Tag and
+  label filters are optional, for projects shared by several applications. Two
+  alternatives were rejected. A hand-maintained list of prompt names in the
+  application goes stale silently. An index of used prompts kept in the PSR-6 pool
+  loses entries under concurrent writes, since PSR-6 has no atomic update, and with
+  a null TTL a lost entry is never refreshed again.
+- `GET /api/public/v2/prompts` returns metadata only (`name`, `type`, `versions`,
+  `labels` across all versions including `latest`, `tags`, `lastUpdatedAt`,
+  `lastConfig`). Pagination is in `meta`, and `totalPages` is 0 for an empty
+  result (verified live). Content needs one `GET` per prompt label.
 
 **Strict `compile()`.** Missing variables and unexpected variables both throw
 `PromptCompilationException`. A prompt edited in Langfuse so that it no longer matches
