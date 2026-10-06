@@ -1,25 +1,110 @@
 # mentax/langfuse-client
 
-Framework-agnostic PHP client for [Langfuse](https://langfuse.com):
+[![CI](https://github.com/mentax/langfuse-client/actions/workflows/ci.yml/badge.svg)](https://github.com/mentax/langfuse-client/actions/workflows/ci.yml)
+![PHP](https://img.shields.io/badge/php-8.3%20%7C%208.4%20%7C%208.5-777bb4)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-- **Prompt management**: fetch, compile, create and label prompts, with a persistent
-  last-known-good cache so your application keeps working when Langfuse is down.
-- **Tracing**: traces and LLM generations (model, parameters, token usage, cost, linked
-  prompt version) exported over OTLP, the only trace ingestion path Langfuse v4 accepts
-  by default.
+**Manage your LLM prompts in [Langfuse](https://langfuse.com), not in your PHP code, and see what every model call did, cost and which prompt version produced it.**
 
-It depends only on PSR interfaces. You bring the HTTP client (PSR-18 + PSR-17),
-the cache (PSR-6) and the logger (PSR-3).
+`mentax/langfuse-client` is a framework-agnostic PHP client for the two Langfuse
+features a PHP application needs at runtime:
 
-Requirements: PHP 8.3+, Langfuse v4 (or v3.22+ for tracing).
+- **Prompt management.** Fetch prompts by label or version and compile them strictly.
+  A persistent cache keeps your application running when Langfuse is not.
+- **Tracing.** Record traces and LLM generations: model, parameters, token usage, cost,
+  errors and the prompt version used. They are exported over OpenTelemetry (OTLP), the
+  only trace ingestion path Langfuse v4 accepts by default.
+
+```php
+$prompt = $prompts->get('support/answer-ticket');            // label "production", cached
+$text   = $prompt->compile(['ticket' => $ticket->body]);      // throws if variables don't match
+
+$generation = $trace->startGeneration('answer', model: 'gemini-2.5-flash', input: $text, prompt: $prompt);
+$generation->end($reply, Usage::fromGeminiUsageMetadata($usage)); // tokens, cost, prompt version
+$tracer->flush();                                                  // never throws
+```
+
+## Why this package
+
+We built it for our own Symfony applications, which call Gemini through a shared
+in-house client. Our requirements were simple: move prompts out of the repositories,
+let product people iterate on them in Langfuse, and never let Langfuse take production
+down. No existing PHP library did all of that, so we wrote one.
+
+### Your application keeps working when Langfuse is down
+
+Once prompts live in Langfuse, Langfuse becomes a runtime dependency. This client is
+built around that fact:
+
+- Prompts are cached in any PSR-6 pool, for example files on persistent storage.
+  The cache survives restarts and deployments.
+- A cached prompt younger than the TTL (10 minutes by default) is served without a
+  network call.
+- When a refresh fails, the last version that worked is served and a warning is
+  logged. That covers a timeout, a 5xx, and a 404 because someone deleted the prompt.
+  Cache entries never expire on their own.
+- Tracing never throws into your code. A failed export is logged and dropped: no
+  retries, no blocking `sleep()` in your request path.
+
+### Prompt edits cannot silently break your code
+
+`compile()` is strict. If the prompt in Langfuse uses `{{damage_cause}}` and your code
+passes `{{cause}}`, you get a `PromptCompilationException`, not a half-filled prompt
+sent to a model. The check runs in both directions: missing variables and unexpected
+ones. Substitution is single-pass, so user input containing `{{...}}` is never
+expanded.
+
+### Traces that actually arrive in Langfuse v4
+
+Langfuse v4 ingests traces through its OpenTelemetry endpoint. The legacy
+`/api/public/ingestion` endpoint still accepts scores, but rejects trace and
+observation events by default. The client speaks OTLP/HTTP JSON in the exact shape the
+Langfuse server parses, which we verified against its source:
+
+- trace input and output are taken from the root span;
+- trace-level fields such as user, session, tags and environment are written on every span;
+- prompt links are attached to generations, so Langfuse can show metrics per prompt version;
+- the scope name is the one Langfuse treats as an SDK, so your metadata isn't flooded
+  with raw attributes.
+
+### No framework, no lock-in
+
+Runtime dependencies are PSR interfaces only: PSR-18/17/7 for HTTP, PSR-6 for the
+cache, PSR-3 for logging and PSR-20 for the clock. Use it with Symfony, Laravel,
+Laminas or plain PHP, and with Symfony HttpClient, Guzzle or any other PSR-18 client.
+
+### Small and strict
+
+- PHPStan at level max with strict rules.
+- PHPUnit tests against both the highest and the lowest supported dependency versions.
+- CI on PHP 8.3, 8.4 and 8.5.
+- No magic and no global state: you construct objects and pass them where they are needed.
+
+## How it compares
+
+PHP libraries for Langfuse we evaluated before writing this one (state as of October 2026):
+
+| | Prompt fetch + compile | Persistent prompt cache | Traces on Langfuse v4 | Token usage on generations | Framework |
+|---|---|---|---|---|---|
+| **mentax/langfuse-client** | ✅ strict | ✅ last-known-good | ✅ OTLP | ✅ | none (PSR) |
+| [dropsolid/langfuse-php-sdk](https://gitlab.com/dropsolid/langfuse-php-sdk) 1.3 | ❌ | ❌ | ❌ legacy ingestion (OTLP in 2.0-alpha) | ✅ | none |
+| [dij-digital/langfuse-php](https://github.com/dij-digital/langfuse-php) 0.2 | ✅ | ❌ | ❌ legacy ingestion | ❌ | none |
+| [axyr/laravel-langfuse](https://github.com/axyr/laravel-langfuse) 0.4 | ✅ | in-memory only | ✅ OTLP | ✅ | Laravel |
+
+All of them are good work and taught us something; see [Inspiration](#inspiration).
+Pick axyr if you are on Laravel and want auto-instrumentation of Prism or Laravel AI.
+Pick this package if you want prompts that survive outages, or anything that is not
+Laravel.
 
 ## Installation
 
 ```bash
 composer require mentax/langfuse-client
-# a PSR-18 client and a PSR-6 cache, for example:
+# plus a PSR-18 client and a PSR-6 cache, for example:
 composer require symfony/http-client nyholm/psr7 symfony/cache
 ```
+
+Requirements: PHP 8.3+ and Langfuse v3.22+ (needed for OTLP tracing). Developed against Langfuse v4.
 
 ## Setup
 
@@ -40,13 +125,9 @@ $langfuse = new Langfuse(
 // or LangfuseConfig::fromEnvironment(): LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY
 ```
 
-### HTTP client and timeouts
-
-PSR-18 has no per-request timeout, so **set one on the client you pass in**. The
-library calls Langfuse inside your request path (prompt refresh, trace flush); without
-a timeout a slow Langfuse makes your application slow. A few seconds is a sensible
-upper bound. The library does not retry: a failed prompt refresh falls back to the
-cache, a failed trace export is logged and dropped.
+> **Set a timeout on your HTTP client.** PSR-18 has no per-request timeout, and the
+> library calls Langfuse inside your request path (prompt refresh, trace flush).
+> A few seconds is a sensible upper bound.
 
 ## Prompts
 
@@ -59,54 +140,56 @@ $prompts = $langfuse->cachedPrompts(
     logger: $logger,
 );
 
-$prompt = $prompts->get('damageaudit/airbag-photo');            // label "production"
-$prompt = $prompts->get('damageaudit/airbag-photo', 'staging'); // another label
+$prompt = $prompts->get('damageaudit/airbag-photo');             // label "production"
+$prompt = $prompts->get('damageaudit/airbag-photo', 'staging');  // another label
 $prompt = $prompts->get('damageaudit/airbag-photo', version: 7); // pinned version
 
-$text = $prompt->compile(['documents_count' => 3]);
-$model = $prompt->config['model'] ?? 'gemini-2.5-flash-lite';
+$text  = $prompt->compile(['documents_count' => 3]);
+$model = $prompt->config['model'] ?? 'gemini-2.5-flash-lite';   // config travels with the version
 ```
+
+Keeping model and temperature in the prompt's `config` means changing the model is
+just a new prompt version, tested and promoted like any other prompt change.
 
 ### Cache behaviour
 
 | Situation | Result |
 |---|---|
-| Cached entry younger than the TTL | Served from cache, Langfuse is not called |
-| Entry older than the TTL | Fetched from Langfuse and the cache is updated |
-| Fetch fails (network, 5xx, **404 after deletion**) and an entry exists | The cached entry is served and a warning is logged |
-| Fetch fails and nothing is cached | The exception is thrown |
+| Cached entry younger than the TTL | Served from cache; Langfuse is not called |
+| Entry older than the TTL | Fetched from Langfuse; the cache is updated |
+| Fetch fails (network, 5xx, 404 after deletion), entry exists | Cached entry served, warning logged |
+| Fetch fails, nothing cached | Exception thrown |
 | Version-pinned prompt | Fetched once; versions never change |
 
-Cache entries never expire on their own. Use a persistent pool on storage that
-survives restarts and deployments. `refresh()` fetches immediately, ignoring the TTL,
-and throws instead of falling back; use it to roll out a label change without waiting
-for the TTL, or to warm the cache during deployment.
+`refresh()` fetches immediately and throws instead of falling back. Call it in your
+deployment to warm the cache and fail the deploy when a prompt is missing. You can
+also call it to roll out a label change without waiting for the TTL.
 
-### Strict compilation
-
-`compile()` throws `PromptCompilationException` when the variables you pass differ
-from the `{{variables}}` in the prompt, in either direction. If someone edits a prompt
-in Langfuse so it no longer matches the calling code, you get an error instead of a
-half-filled prompt sent to a model. Variables are substituted in one pass, so a value
-containing `{{something}}` is inserted literally.
-
-Chat prompts work the same way, plus message placeholders:
+### Chat prompts and placeholders
 
 ```php
+use Mentax\LangfuseClient\Prompt\ChatMessage;
+
 $messages = $chatPrompt->compile(
     ['claim_type' => 'property'],
     ['history' => [new ChatMessage('user', '...'), ['role' => 'assistant', 'content' => '...']]],
 );
 ```
 
-### Managing prompts
+### Managing prompts from code
 
-`$langfuse->prompts()` is the uncached API client:
+`$langfuse->prompts()` is the uncached API client, useful for migration scripts and CI:
 
 ```php
 $client = $langfuse->prompts();
-$v = $client->createText('damageaudit/vin', 'Read the VIN from {{count}} photos.', ['staging'], ['model' => 'gemini-2.5-flash']);
-$client->setLabels('damageaudit/vin', $v->version, ['production']); // promote
+$version = $client->createText(
+    'damageaudit/vin',
+    'Read the VIN from {{count}} photos.',
+    labels: ['staging'],
+    config: ['model' => 'gemini-2.5-flash'],
+    commitMessage: 'Import from repository',
+);
+$client->setLabels('damageaudit/vin', $version->version, ['production']); // promote
 ```
 
 ## Tracing
@@ -129,7 +212,7 @@ try {
     $response = $gemini->generate($text);
     $generation->end($response->text, Usage::fromGeminiUsageMetadata($response->usageMetadata));
 } catch (Throwable $e) {
-    $generation->fail($e);
+    $generation->fail($e); // level ERROR, exception message as status
     throw $e;
 }
 
@@ -137,42 +220,58 @@ $trace->end(['passed' => true]);
 $tracer->flush();
 ```
 
-- Nothing is sent until you call `flush()`, or until `batchSize` ended observations
-  accumulate. Call `flush()` at the end of each unit of work: on `kernel.terminate`
-  in Symfony, after each Messenger message, at the end of a CLI command. Call
-  `shutdown()` when a long-running worker stops; it ends observations still open.
-- `flush()` and `shutdown()` never throw. A failed export is logged with level
-  `error` and the batch is dropped.
-- `Tracer::traceIdFromSeed($auditId)` derives a stable trace ID from your own
-  identifier, so you can find or score the trace later without storing its ID.
-- `Usage::fromGeminiUsageMetadata()` maps Gemini's `usageMetadata`. Thinking tokens
-  count as output, since that is how they are billed; they are also reported as
-  `output_reasoning_tokens`.
+- **When data is sent.** Nothing goes out until `flush()`, or until `batchSize` ended
+  observations accumulate. Call `flush()` at the end of each unit of work:
+  `kernel.terminate` in Symfony, after each Messenger message, at the end of a CLI
+  command. Call `shutdown()` when a long-running worker stops; it ends observations
+  that are still open.
+- **Spans and events.** `startSpan()` for steps such as retrieval or parsing,
+  `event()` for points in time. Both can be nested under any observation.
+- **Stable trace IDs.** `Tracer::traceIdFromSeed($auditId)` derives the trace ID from
+  your own identifier, so you can find or score the trace later without storing it.
+- **Gemini token usage.** `Usage::fromGeminiUsageMetadata()` maps Gemini's
+  `usageMetadata`. Thinking tokens count as output, since that is how they are billed.
+  For other providers, build a `Usage` with `input`, `output` and `total`.
 
-### What gets sent
+**Inputs and outputs are sent in full.** If they contain personal data, decide what
+to trace, and restrict who can access the Langfuse project.
 
-Langfuse v4 builds a trace from its spans. The trace's input and output are those of
-the root span (`startTrace()` / `Trace::end()`). User, session, tags, environment and
-release are written on every span. Inputs and outputs that are not strings are sent
-as JSON.
+## Inspiration
 
-**Inputs and outputs are sent in full.** If they contain personal data, decide what to
-send before tracing it, and restrict who can access the Langfuse project.
+This package stands on the shoulders of others:
+
+- **[Langfuse](https://github.com/langfuse/langfuse)**: the server source is the
+  specification. The OTLP attribute mapping, the `{{variable}}` rules (Unicode names,
+  optional whitespace) and chat placeholders follow what the server does, not what
+  the docs summarise.
+- **[dij-digital/langfuse-php](https://github.com/dij-digital/langfuse-php)**: the shape
+  of the prompt API (text/chat prompts, compile, create, label updates, fallbacks).
+- **[axyr/laravel-langfuse](https://github.com/axyr/laravel-langfuse)**: showing that OTLP
+  is the right transport for PHP, and serving a stale prompt when a refresh fails.
+- **[dropsolid/langfuse-php-sdk](https://gitlab.com/dropsolid/langfuse-php-sdk)**: careful
+  validation of usage and cost payloads against what Langfuse silently drops. Its ADRs
+  are worth reading.
+- **The official Python and JS SDKs**: environment variable names, the `production`
+  label default, and the "a prompt is a versioned, labelled artefact" model.
+
+No code was copied. The design decisions were informed by reading all of the above.
+
+## Roadmap
+
+- Scores API (send evaluation results and user feedback)
+- Datasets and experiment runs, for regression-testing prompt versions against real code paths
+- Media uploads (images and PDFs attached to traces)
+
+Issues and pull requests are welcome.
 
 ## Development
 
 ```bash
 composer install
-composer check     # php-cs-fixer (dry run), PHPStan (level max), PHPUnit
+composer check                # php-cs-fixer (dry run), PHPStan (level max), PHPUnit
 php examples/smoke-test.php   # end-to-end against a real instance, see the file header
 ```
 
-## Credits
-
-The prompt API design draws on [dij-digital/langfuse-php](https://github.com/dij-digital/langfuse-php)
-(MIT), and the OTLP mapping on [axyr/laravel-langfuse](https://github.com/axyr/laravel-langfuse) (MIT)
-and the Langfuse server source.
-
 ## License
 
-MIT
+MIT © Mentax
