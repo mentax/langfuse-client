@@ -113,6 +113,10 @@ Requirements: PHP 8.3+ and Langfuse v3.22+ (needed for OTLP tracing). Developed 
 
 ## Setup
 
+The constructor takes a PSR-18 client plus PSR-17 request and stream factories. Symfony's
+`Psr18Client` implements all three, so the same instance fills every argument; with other
+implementations (e.g. Guzzle client + `GuzzleHttp\Psr7\HttpFactory`) pass separate objects.
+
 ```php
 use Mentax\LangfuseClient\Langfuse;
 use Mentax\LangfuseClient\LangfuseConfig;
